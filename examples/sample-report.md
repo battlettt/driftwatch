@@ -9,7 +9,7 @@
 | **Largest correlation shift** | 0.027 (threshold 0.2) |
 | **Reference rows** | 4,000 |
 | **Current rows** | 3,000 |
-| **Generated** | 2026-10-25 15:11:26 UTC |
+| **Generated** | 2026-10-25 15:19:26 UTC |
 
 ## Top drifted columns
 

@@ -1,4 +1,4 @@
-"""Command-line interface: ``python -m driftwatch {fit,check}``.
+"""Command-line interface: ``python -m driftwatch {fit,check,history,trend}``.
 
 Exit codes for ``check``: 0 when the run succeeds (regardless of drift),
 1 when ``--fail-on`` is set and the condition is met, 2 for usage or input errors.
@@ -19,6 +19,7 @@ from . import __version__
 from .config import ThresholdConfig
 from .correlation import METHODS as CORRELATION_METHODS
 from .detector import DriftDetector
+from .history import append_history, format_history_table, read_history, render_trend_html
 from .report import STATUS_TEXT, correlation_verdict, describe_change, render_html, render_markdown
 
 #: ``fit`` flags that override individual drift thresholds (dest name == DriftThresholds field).
@@ -92,6 +93,20 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["drift", "warning", "decay"],
         help="exit with status 1 if the dataset drifted ('drift'), anything changed ('warning'), or the model decayed",
     )
+    check.add_argument("--history", metavar="PATH", help="append a one-line JSON summary of this check to this JSONL file")
+
+    history = sub.add_parser("history", help="print a table of past checks recorded with 'check --history'")
+    history.add_argument("--history", required=True, metavar="PATH", help="JSONL history file")
+    history.add_argument("--last", type=int, metavar="N", help="only show the N most recent checks")
+    history.add_argument(
+        "--newest-first", action="store_true", help="list the newest check first (default: oldest first, newest last)"
+    )
+
+    trend = sub.add_parser("trend", help="render an HTML page charting the drift score over past checks")
+    trend.add_argument("--history", required=True, metavar="PATH", help="JSONL history file")
+    trend.add_argument("--report", required=True, help="where to write the HTML page")
+    trend.add_argument("--last", type=int, metavar="N", help="only include the N most recent checks")
+    trend.add_argument("--title", default="driftwatch trend", help="page title (default: 'driftwatch trend')")
     return parser
 
 
@@ -186,6 +201,10 @@ def _cmd_check(args: argparse.Namespace) -> int:
         Path(args.report).write_text(content, encoding="utf-8")
         print(f"Report written to {args.report}")
 
+    if args.history:
+        append_history(args.history, report, source=args.data)
+        print(f"Check appended to {args.history}")
+
     if args.fail_on == "drift" and report.dataset_drift:
         return 1
     if args.fail_on == "warning" and report.status != "ok":
@@ -195,15 +214,39 @@ def _cmd_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_entries(args: argparse.Namespace) -> tuple:
+    """History entries honouring ``--last``, plus the check number of the first one."""
+    if args.last is not None and args.last < 1:
+        raise ValueError("--last must be at least 1")
+    entries = read_history(args.history)
+    tail = entries[-args.last :] if args.last else entries
+    return tail, len(entries) - len(tail) + 1
+
+
+def _cmd_history(args: argparse.Namespace) -> int:
+    entries, first = _read_entries(args)
+    print(format_history_table(entries, newest_first=args.newest_first, first_number=first))
+    return 0
+
+
+def _cmd_trend(args: argparse.Namespace) -> int:
+    entries, first = _read_entries(args)
+    html = render_trend_html(entries, title=args.title, first_number=first)
+    Path(args.report).write_text(html, encoding="utf-8")
+    print(f"Trend of {len(entries)} check{'' if len(entries) == 1 else 's'} written to {args.report}")
+    return 0
+
+
+_COMMANDS = {"fit": _cmd_fit, "check": _cmd_check, "history": _cmd_history, "trend": _cmd_trend}
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command == "check" and args.fail_on == "decay" and not args.model:
         parser.error("--fail-on decay requires --model")
     try:
-        if args.command == "fit":
-            return _cmd_fit(args)
-        return _cmd_check(args)
+        return _COMMANDS[args.command](args)
     except (FileNotFoundError, ValueError, KeyError, pickle.UnpicklingError) as exc:
         print(f"driftwatch: error: {exc}", file=sys.stderr)
         return 2

@@ -33,6 +33,7 @@ Labels often arrive weeks after predictions, so you can't just watch accuracy. d
 - **Configurable thresholds.** All cut-offs (PSI, significance level, drift share, correlation shift, decay tolerances) can be loaded from a JSON config file, with `--config` on the CLI or `thresholds=` in the API.
 - **Reports.** Markdown, JSON, and a self-contained HTML file that uses inline CSS only, with no fonts, scripts or CDN links.
 - **CLI.** `fit` and `check` commands. The detector is saved as plain JSON. `--fail-on` turns drift or decay into a non-zero exit code, so a CI job or scheduled pipeline can stop on it.
+- **Check history and trend.** `check --history PATH` appends a one-line JSON summary of each check to a JSONL file. `history` prints those checks as a table, and `trend` renders a self-contained HTML page charting the overall drift score over time.
 
 ## Install
 
@@ -168,8 +169,11 @@ Useful options:
 | `check` | `--format {html,md,json}` | Report format. By default it is inferred from the `--report` extension, or HTML if the extension is unknown. |
 | `check` | `--model PATH` | Adds a performance-decay section (classifier or regressor). The data must contain the target column. |
 | `check` | `--fail-on {drift,warning,decay}` | Exit with status 1 when the condition is met, for CI and cron jobs. |
+| `check` | `--history PATH` | Append a one-line JSON summary of the check to a JSONL file (see [Tracking checks over time](#4-track-checks-over-time)). |
+| `history` | `--last N`, `--newest-first` | Show only the N most recent checks; list newest first instead of oldest first. |
+| `trend` | `--report PATH`, `--last N`, `--title TEXT` | Where to write the HTML page, how many recent checks to include, and the page title. |
 
-Exit codes: `0` means the check ran (and the `--fail-on` condition, if set, was not met). `1` means the `--fail-on` condition was met. `2` means bad input, such as a missing file, an invalid detector, or an invalid config file.
+Exit codes: `0` means the command ran (and the `--fail-on` condition, if set, was not met). `1` means the `--fail-on` condition was met. `2` means bad input, such as a missing file, an invalid detector, an invalid config file, or a malformed history file.
 
 > `--model` loads a Python pickle. Unpickling can run arbitrary code, so only pass model files you created or otherwise trust.
 
@@ -241,6 +245,95 @@ for pair in report.correlation.flagged_pairs:
 ```
 
 You can also call the metrics and comparisons directly. See `driftwatch.psi`, `driftwatch.ks_test`, `driftwatch.js_divergence`, `driftwatch.chi_square_test`, `driftwatch.total_variation`, `driftwatch.compare_correlations` and `driftwatch.compare_performance`.
+
+### 4. Track checks over time
+
+A single check tells you about one batch. To see whether drift is creeping up across batches, pass `--history` to every `check`. Each check appends one JSON line to the file, which is created on first use. The line is written even when `--fail-on` makes the command exit with 1. These commands run the demo's three batches through the CLI:
+
+```bash
+python -m driftwatch fit --reference examples/output/reference.csv --target defaulted \
+    --model examples/output/model.pkl --out examples/output/detector.json
+
+for batch in stable drifted scrambled; do
+  python -m driftwatch check --detector examples/output/detector.json \
+      --data examples/output/current_$batch.csv --model examples/output/model.pkl \
+      --history examples/output/history.jsonl
+done
+```
+
+Each `check` prints its usual summary, followed by `Check appended to examples/output/history.jsonl`. One line of the file, pretty-printed:
+
+```json
+{
+    "timestamp": "2026-10-25T15:17:30Z",
+    "status": "ok",
+    "overall_score": 0.016938,
+    "drift_share": 0.0,
+    "dataset_drift": false,
+    "correlation_drift": false,
+    "top_drifted": [],
+    "max_correlation_shift": 0.035934,
+    "model_decayed": false,
+    "n_current": 3000,
+    "missing_columns": [],
+    "source": "examples/output/current_stable.csv",
+    "driftwatch_version": "0.2.0"
+}
+```
+
+`top_drifted` holds `{"column", "severity", "psi"}` objects. `model_decayed` is `null` when the check ran without `--model`. Timestamps are UTC, taken when the check ran.
+
+`history` prints the recorded checks. By default they are listed **oldest first** (newest last), in the order they were appended. Rows are numbered by check order:
+
+```bash
+python -m driftwatch history --history examples/output/history.jsonl
+```
+
+```text
+#  Time (UTC)           Status  Score  Drifted  Corr. drift  Decayed  Top drifted columns
+1  2026-10-25 15:17:30  ok      0.017       0%  no           no       -
+2  2026-10-25 15:17:32  drift   0.394      40%  no           yes      purpose, annual_income, credit_score, +2 more
+3  2026-10-25 15:17:33  drift   0.016       0%  yes          no       -
+```
+
+`--newest-first` reverses the order, and `--last N` keeps only the N most recent checks. Rows keep their original numbers:
+
+```bash
+python -m driftwatch history --history examples/output/history.jsonl --newest-first --last 2
+```
+
+```text
+#  Time (UTC)           Status  Score  Drifted  Corr. drift  Decayed  Top drifted columns
+3  2026-10-25 15:17:33  drift   0.016       0%  yes          no       -
+2  2026-10-25 15:17:32  drift   0.394      40%  no           yes      purpose, annual_income, credit_score, +2 more
+```
+
+The third check is a reminder that the score and the status measure different things. The score only reflects per-column PSI, so the scrambled batch scores 0.016. It is still `drift` because of the correlation-shift rule, which the `Corr. drift` column shows.
+
+`trend` writes a self-contained HTML page. It shows the overall drift score over time as a step chart, with points placed by check time and coloured by status, and a table of the checks below it. Hovering a point shows its details. The page uses inline CSS and inline SVG only, with no scripts, fonts or network requests:
+
+```bash
+python -m driftwatch trend --history examples/output/history.jsonl --report examples/sample-trend.html
+```
+
+```text
+Trend of 3 checks written to examples/sample-trend.html
+```
+
+The result is checked in as [`examples/sample-trend.html`](examples/sample-trend.html). In a real deployment the checks would be hours or days apart, not seconds.
+
+In Python:
+
+```python
+from driftwatch import append_history, read_history, render_trend_html
+
+append_history("history.jsonl", report, source="batch-2026-10-25.csv")   # returns the HistoryEntry
+entries = read_history("history.jsonl")                                  # oldest first
+print(entries[-1].status, entries[-1].overall_score)
+open("trend.html", "w").write(render_trend_html(entries))
+```
+
+`read_history` skips blank lines and ignores keys it doesn't know. It rejects malformed lines with a `ValueError` that names the line number. Each append writes one line in append mode, so you can commit, `tail` or concatenate history files with ordinary tools. driftwatch does not lock the file, so give concurrent jobs separate history files.
 
 ## Configuring thresholds
 
@@ -377,6 +470,16 @@ Log-loss is only computed for models that have `predict_proba`. MAE and RMSE are
 - The correlation-shift check covers pairwise linear (Pearson) or monotonic (Spearman) relationships between numeric columns. It does not cover relationships involving categorical columns, non-monotonic dependence, or interactions among three or more columns. A change in those can still go unnoticed while every marginal distribution and pairwise correlation stays the same.
 - The correlation matrix grows with the square of the number of numeric columns. With hundreds of numeric columns the detector JSON gets correspondingly larger; use `--exclude` for columns you don't need to monitor.
 
+## Limitations
+
+driftwatch is deliberately small. What it does **not** do:
+
+- **Multivariate drift beyond pairwise correlation.** Each column is checked on its own, and relationships are checked only as pairwise Pearson or Spearman correlations between numeric columns. Interactions among three or more features, non-monotonic dependence, and relationships involving categorical columns are not monitored. A change confined to those can pass every check.
+- **Label-free concept drift detection.** All the input checks measure changes in the distribution of the features (covariate drift). A change in the relationship between features and outcome, where the inputs look the same but the right answer is different, only shows up in the performance-decay check. That check needs labels for the new data, so concept drift is detected only after labels arrive.
+- **Models other than classifiers and regressors.** Decay metrics exist only for classification (accuracy, F1, log-loss) and regression (R², MAE, RMSE). Ranking, clustering, forecasting-specific, multi-output and generative models are not supported.
+- **Unstructured data.** Only tabular data (pandas DataFrames / CSV) is supported, not text, images or embeddings.
+- **Scheduling, alerting and storage.** driftwatch runs one check when you call it. Running it on a schedule, sending alerts, and storing reports are left to your scheduler or CI. Check history is a local JSONL file without locking.
+
 ## Development
 
 ```bash
@@ -395,6 +498,7 @@ The test suite covers:
 - JSON round-trips;
 - report escaping and self-containment;
 - performance decay;
+- check history: JSONL append / read round-trips, malformed lines, table ordering, trend-page self-containment, escaping and time-proportional placement, and the `check --history`, `history` and `trend` commands;
 - the CLI, end to end on temporary CSV files, including `python -m driftwatch`.
 
 CI (`.github/workflows/ci.yml`) runs the test suite and the demo script on Python 3.10, 3.11 and 3.12 for every push and pull request.
@@ -410,15 +514,19 @@ src/driftwatch/
   detector.py     DriftDetector, DriftReport, ColumnDrift, JSON (de)serialisation
   decay.py        classifier and regressor performance metrics, decay comparison
   report.py       Markdown and HTML rendering
-  cli.py          `fit` / `check` commands (also `python -m driftwatch`)
+  history.py      check history (JSONL), history table, HTML trend page
+  cli.py          `fit` / `check` / `history` / `trend` commands (also `python -m driftwatch`)
 examples/
   loan_drift_demo.py   synthetic end-to-end demo
   sample-report.md     generated output, checked in
   sample-report.html   generated output, checked in
+  sample-trend.html    generated trend page, checked in
   thresholds.json      example threshold config
 tests/
 .github/workflows/ci.yml
 ```
+
+Release notes are in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
