@@ -12,8 +12,12 @@ What it does:
    * a drifted batch simulating an economic downturn plus a new marketing
      channel: lower incomes, lower credit scores, bigger loans, more renters,
      a loan purpose the model never saw, an upstream bug that blanks some
-     incomes, and a higher underlying default rate.
-5. Prints both summaries and writes examples/sample-report.md and
+     incomes, and a higher underlying default rate,
+   * a "scrambled" batch simulating an upstream join bug that attaches each
+     application's loan amount to the wrong row. Every column keeps its
+     distribution, so per-column checks see nothing; only the correlation
+     shift check notices that loan amount no longer tracks income.
+5. Prints the summaries and writes examples/sample-report.md and
    examples/sample-report.html for the drifted batch. CSVs and the pickled
    model go to examples/output/ so the CLI can be tried on them.
 
@@ -132,6 +136,11 @@ def print_summary(title: str, report) -> None:
         for ch in report.performance.changes:
             flag = "  <-- decayed" if ch.decayed else ""
             print(f"  {ch.metric:<9} {ch.reference:.4f} -> {ch.current:.4f}{flag}")
+    corr = report.correlation
+    if corr is not None:
+        print(f"  correlation shift: max |change| = {corr.max_abs_change:.3f} (threshold {corr.threshold})")
+        for pair in corr.flagged_pairs:
+            print(f"    {pair.column_a} x {pair.column_b}: {pair.reference:+.3f} -> {pair.current:+.3f}  <-- shifted")
 
 
 def main() -> None:
@@ -139,6 +148,8 @@ def main() -> None:
     reference = make_loans(4000, seed=2)
     stable = make_loans(3000, seed=3)
     drifted = make_loans(3000, seed=4, drifted=True)
+    scrambled = make_loans(3000, seed=5)
+    scrambled["loan_amount"] = np.random.default_rng(5).permutation(scrambled["loan_amount"].to_numpy())
 
     model = train_model(train)
     detector = DriftDetector().fit(reference, target=TARGET, model=model)
@@ -147,6 +158,7 @@ def main() -> None:
     drifted_report = detector.drift_report(drifted, model=model)
     print_summary("Stable batch (same distribution)", stable_report)
     print_summary("Drifted batch (downturn + new channel)", drifted_report)
+    print_summary("Scrambled batch (join bug: loan_amount on the wrong rows)", detector.drift_report(scrambled, model=model))
 
     (HERE / "sample-report.md").write_text(drifted_report.to_markdown(), encoding="utf-8")
     (HERE / "sample-report.html").write_text(drifted_report.to_html(), encoding="utf-8")
@@ -155,6 +167,7 @@ def main() -> None:
     reference.to_csv(OUTPUT / "reference.csv", index=False)
     stable.to_csv(OUTPUT / "current_stable.csv", index=False)
     drifted.to_csv(OUTPUT / "current_drifted.csv", index=False)
+    scrambled.to_csv(OUTPUT / "current_scrambled.csv", index=False)
     with open(OUTPUT / "model.pkl", "wb") as fh:
         pickle.dump(model, fh)
     detector.save(OUTPUT / "detector.json")

@@ -9,15 +9,20 @@ from __future__ import annotations
 import argparse
 import pickle
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, List, Optional
 
 import pandas as pd
 
 from . import __version__
+from .config import ThresholdConfig
+from .correlation import METHODS as CORRELATION_METHODS
 from .detector import DriftDetector
-from .report import STATUS_TEXT, describe_change, render_html, render_markdown
-from .thresholds import DriftThresholds
+from .report import STATUS_TEXT, correlation_verdict, describe_change, render_html, render_markdown
+
+#: ``fit`` flags that override individual drift thresholds (dest name == DriftThresholds field).
+_THRESHOLD_FLAGS = ("psi_moderate", "psi_high", "p_value", "drift_share", "correlation_shift")
 
 
 def _read_csv(path: str) -> pd.DataFrame:
@@ -45,16 +50,25 @@ def _build_parser() -> argparse.ArgumentParser:
     fit.add_argument("--reference", required=True, help="CSV file with reference data")
     fit.add_argument("--out", required=True, help="where to write the detector JSON")
     fit.add_argument("--target", help="label column; excluded from drift checks and used for the model baseline")
-    fit.add_argument("--model", help="pickled fitted sklearn classifier (trusted files only); requires --target")
+    fit.add_argument(
+        "--model", help="pickled fitted sklearn classifier or regressor (trusted files only); requires --target"
+    )
     fit.add_argument("--bins", type=int, default=10, help="quantile bins for numeric columns (default: 10)")
     fit.add_argument("--max-categories", type=int, default=50, help="categories tracked per column (default: 50)")
     fit.add_argument("--sample-size", type=int, default=5000, help="reference values kept per column for KS (default: 5000)")
     fit.add_argument("--categorical", nargs="+", default=[], metavar="COL", help="treat these numeric columns as categorical")
     fit.add_argument("--exclude", nargs="+", default=[], metavar="COL", help="ignore these columns (IDs, timestamps, ...)")
-    fit.add_argument("--psi-moderate", type=float, default=DriftThresholds.psi_moderate)
-    fit.add_argument("--psi-high", type=float, default=DriftThresholds.psi_high)
-    fit.add_argument("--p-value", type=float, default=DriftThresholds.p_value)
-    fit.add_argument("--drift-share", type=float, default=DriftThresholds.drift_share)
+    fit.add_argument(
+        "--correlation-method",
+        choices=CORRELATION_METHODS,
+        default="pearson",
+        help="correlation used for the correlation-shift check (default: pearson)",
+    )
+    fit.add_argument("--config", help="JSON threshold config to store in the detector (see README)")
+    for flag in _THRESHOLD_FLAGS:
+        fit.add_argument(
+            "--" + flag.replace("_", "-"), type=float, help="override this threshold (takes precedence over --config)"
+        )
 
     check = sub.add_parser("check", help="compare new data against a fitted detector")
     check.add_argument("--detector", required=True, help="detector JSON produced by 'fit'")
@@ -65,7 +79,13 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["html", "md", "json"],
         help="report format (default: inferred from --report extension, else html)",
     )
-    check.add_argument("--model", help="pickled fitted classifier (trusted files only); adds a decay section")
+    check.add_argument(
+        "--model", help="pickled fitted classifier or regressor (trusted files only); adds a decay section"
+    )
+    check.add_argument(
+        "--config",
+        help="JSON threshold config; overrides the thresholds stored in the detector for this check (see README)",
+    )
     check.add_argument("--top", type=int, default=5, help="number of top drifted columns to list (default: 5)")
     check.add_argument(
         "--fail-on",
@@ -91,19 +111,17 @@ def _cmd_fit(args: argparse.Namespace) -> int:
     if args.model and not args.target:
         raise ValueError("--model requires --target")
     reference = _read_csv(args.reference)
-    thresholds = DriftThresholds(
-        psi_moderate=args.psi_moderate,
-        psi_high=args.psi_high,
-        p_value=args.p_value,
-        drift_share=args.drift_share,
-    )
+    config = ThresholdConfig.load(args.config) if args.config else ThresholdConfig()
+    overrides = {flag: getattr(args, flag) for flag in _THRESHOLD_FLAGS if getattr(args, flag) is not None}
+    config = replace(config, drift=replace(config.drift, **overrides))
     detector = DriftDetector(
         n_bins=args.bins,
         max_categories=args.max_categories,
         sample_size=args.sample_size,
         categorical_columns=args.categorical,
         exclude_columns=args.exclude,
-        thresholds=thresholds,
+        thresholds=config,
+        correlation_method=args.correlation_method,
     )
     model = _load_model(args.model) if args.model else None
     detector.fit(reference, target=args.target, model=model)
@@ -114,10 +132,12 @@ def _cmd_fit(args: argparse.Namespace) -> int:
         f"Fitted detector on {len(reference):,} rows: {kinds.count('numeric')} numeric and "
         f"{kinds.count('categorical')} categorical columns."
     )
+    if detector.correlation is not None:
+        n = len(detector.correlation.columns)
+        print(f"Stored {detector.correlation.method} correlations for {n * (n - 1) // 2} numeric column pairs.")
     if detector.baseline:
-        b = detector.baseline
-        extra = f", log_loss={b['log_loss']:.4f}" if "log_loss" in b else ""
-        print(f"Model baseline: accuracy={b['accuracy']:.4f}, f1={b['f1']:.4f}{extra}")
+        metrics = ", ".join(f"{k}={v:.4f}" for k, v in detector.baseline.items() if k != "n")
+        print(f"Model baseline: {metrics}")
     print(f"Saved to {args.out}")
     return 0
 
@@ -126,7 +146,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
     detector = DriftDetector.load(args.detector)
     current = _read_csv(args.data)
     model = _load_model(args.model) if args.model else None
-    report = detector.drift_report(current, top_k=args.top, model=model)
+    report = detector.drift_report(current, top_k=args.top, model=model, thresholds=args.config)
 
     print(f"Status: {STATUS_TEXT[report.status]}")
     print(
@@ -140,6 +160,14 @@ def _cmd_check(args: argparse.Namespace) -> int:
         width = max(len(c.column) for c in report.top_drifted)
         for c in report.top_drifted:
             print(f"  {c.column:<{width}}  {c.severity:<8}  PSI={c.psi:.3f}  {describe_change(c)}")
+    if report.correlation is not None:
+        corr = report.correlation
+        print(f"Correlation shifts: {correlation_verdict(corr)}")
+        for pair in corr.top_shifts[: args.top]:
+            if pair.abs_change < corr.threshold / 2 and not pair.exceeds_threshold:
+                break
+            flag = "  <-- beyond threshold" if pair.exceeds_threshold else ""
+            print(f"  {pair.column_a} x {pair.column_b}: {pair.reference:+.3f} -> {pair.current:+.3f}{flag}")
     if report.performance is not None:
         perf = report.performance
         state = "DECAYED (" + ", ".join(perf.decayed_metrics) + ")" if perf.decayed else "within tolerance"

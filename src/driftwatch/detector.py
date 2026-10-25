@@ -12,6 +12,14 @@ import numpy as np
 import pandas as pd
 
 from . import __version__
+from .config import ThresholdConfig, ThresholdSpec, resolve_thresholds
+from .correlation import (
+    METHODS as CORRELATION_METHODS,
+    CorrelationProfile,
+    CorrelationReport,
+    compare_correlations,
+    fit_correlation,
+)
 from .decay import DecayReport, DecayThresholds, compare_metrics, compute_metrics, feature_columns
 from .metrics import (
     bin_counts,
@@ -136,9 +144,21 @@ class DriftReport:
     top_k: int = 5
     missing_columns: List[str] = field(default_factory=list)
     performance: Optional[DecayReport] = None
+    correlation: Optional[CorrelationReport] = None
     generated_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     )
+
+    @property
+    def column_drift(self) -> bool:
+        """True when the per-column rules alone flag the dataset (drift share or any ``high`` column)."""
+        share = self.drift_share >= self.thresholds.drift_share
+        return share or any(c.severity == "high" for c in self.columns)
+
+    @property
+    def correlation_drift(self) -> bool:
+        """True when a pair of numeric columns' correlation moved by at least ``correlation_shift``."""
+        return self.correlation is not None and self.correlation.drifted
 
     @property
     def top_drifted(self) -> List[ColumnDrift]:
@@ -165,6 +185,8 @@ class DriftReport:
             "overall_score": self.overall_score,
             "drift_share": self.drift_share,
             "dataset_drift": self.dataset_drift,
+            "column_drift": self.column_drift,
+            "correlation_drift": self.correlation_drift,
             "n_reference": self.n_reference,
             "n_current": self.n_current,
             "generated_at": self.generated_at,
@@ -174,6 +196,7 @@ class DriftReport:
             "missing_columns": self.missing_columns,
             "columns": [c.to_dict() for c in self.columns],
             "performance": self.performance.to_dict() if self.performance else None,
+            "correlation": self.correlation.to_dict() if self.correlation else None,
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -223,9 +246,17 @@ class DriftDetector:
         Columns to force to categorical even if they are numeric (e.g. codes).
     exclude_columns:
         Columns to ignore entirely (IDs, timestamps, ...).
-    thresholds, decay_thresholds:
-        Severity and decay thresholds; see :mod:`driftwatch.thresholds` and
-        :mod:`driftwatch.decay`.
+    thresholds:
+        Severity thresholds (:class:`DriftThresholds`), or a full threshold
+        config: a :class:`~driftwatch.config.ThresholdConfig`, a dict in
+        config-file shape, or the path to a JSON config file (see
+        :mod:`driftwatch.config`). A config's ``decay`` section sets the decay
+        thresholds unless ``decay_thresholds`` is also given.
+    decay_thresholds:
+        Performance-decay thresholds; see :mod:`driftwatch.decay`.
+    correlation_method:
+        ``'pearson'`` (default) or ``'spearman'``, for the correlation-shift
+        check across numeric columns; see :mod:`driftwatch.correlation`.
     random_state:
         Seed for the reference subsample, so fitting is reproducible.
     """
@@ -237,9 +268,10 @@ class DriftDetector:
         sample_size: int = 5000,
         categorical_columns: Optional[Iterable[str]] = None,
         exclude_columns: Optional[Iterable[str]] = None,
-        thresholds: Optional[DriftThresholds] = None,
+        thresholds: Optional[ThresholdSpec] = None,
         decay_thresholds: Optional[DecayThresholds] = None,
         random_state: int = 0,
+        correlation_method: str = "pearson",
     ) -> None:
         if n_bins < 2:
             raise ValueError("n_bins must be at least 2")
@@ -247,16 +279,21 @@ class DriftDetector:
             raise ValueError("max_categories must be at least 1")
         if sample_size < 1:
             raise ValueError("sample_size must be at least 1")
+        if correlation_method not in CORRELATION_METHODS:
+            raise ValueError(f"correlation_method must be one of {CORRELATION_METHODS}")
+        config = resolve_thresholds(thresholds)
         self.n_bins = int(n_bins)
         self.max_categories = int(max_categories)
         self.sample_size = int(sample_size)
         self.categorical_columns = list(categorical_columns or [])
         self.exclude_columns = list(exclude_columns or [])
-        self.thresholds = thresholds or DriftThresholds()
-        self.decay_thresholds = decay_thresholds or DecayThresholds()
+        self.thresholds = config.drift
+        self.decay_thresholds = decay_thresholds or config.decay
         self.random_state = int(random_state)
+        self.correlation_method = correlation_method
 
         self.profiles: Dict[str, Profile] = {}
+        self.correlation: Optional[CorrelationProfile] = None
         self.target: Optional[str] = None
         self.baseline: Optional[Dict[str, float]] = None
         self.feature_names: Optional[List[str]] = None
@@ -283,8 +320,13 @@ class DriftDetector:
         """Store reference distributions for every column of ``reference``.
 
         If ``target`` is given it is excluded from drift monitoring. If
-        ``model`` (a fitted classifier) is given too, its accuracy / F1 /
-        log-loss on the reference data are stored as the performance baseline.
+        ``model`` (a fitted classifier or regressor) is given too, its metrics
+        on the reference data are stored as the performance baseline:
+        accuracy / F1 / log-loss for classifiers, R² / MAE / RMSE for
+        regressors.
+
+        The correlation matrix of the numeric columns is stored too, for the
+        correlation-shift check.
         """
         if not isinstance(reference, pd.DataFrame):
             raise TypeError("reference must be a pandas DataFrame")
@@ -311,6 +353,11 @@ class DriftDetector:
             raise ValueError("no columns left to monitor after excluding target/excluded columns")
 
         self.profiles = profiles
+        numeric = [name for name, p in profiles.items() if isinstance(p, NumericProfile)]
+        by_name = {str(c): c for c in reference.columns}
+        self.correlation = fit_correlation(
+            reference[[by_name[c] for c in numeric]].set_axis(numeric, axis=1), numeric, self.correlation_method
+        )
         self.target = target
         self.n_reference = int(len(reference))
         self.fitted_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -391,14 +438,21 @@ class DriftDetector:
         current: pd.DataFrame,
         top_k: int = 5,
         model: Any = None,
+        thresholds: Optional[ThresholdSpec] = None,
     ) -> DriftReport:
         """Compare ``current`` against the reference and return a :class:`DriftReport`.
 
         If ``model`` is given, the report also includes a performance-decay
         section; this requires a baseline stored at fit time and the target
         column to be present in ``current``.
+
+        ``thresholds`` overrides the detector's stored thresholds for this
+        report only. It accepts anything the constructor does, including the
+        path to a JSON config file; dicts and files are partial overrides.
         """
         self._require_fitted()
+        config = resolve_thresholds(thresholds, ThresholdConfig(self.thresholds, self.decay_thresholds))
+        t = config.drift
         if not isinstance(current, pd.DataFrame):
             raise TypeError("current must be a pandas DataFrame")
         if len(current) == 0:
@@ -411,17 +465,20 @@ class DriftDetector:
                 missing_columns.append(name)
                 continue
             if isinstance(profile, NumericProfile):
-                results.append(self._check_numeric(name, profile, current[name]))
+                results.append(self._check_numeric(name, profile, current[name], t))
             else:
-                results.append(self._check_categorical(name, profile, current[name]))
+                results.append(self._check_categorical(name, profile, current[name], t))
 
         if not results:
             raise ValueError("none of the reference columns are present in the current data")
 
-        t = self.thresholds
+        correlation = None
+        if self.correlation is not None:
+            correlation = compare_correlations(self.correlation, current, t.correlation_shift, top_k)
+
         drift_share = sum(SEVERITY_RANK[r.severity] >= SEVERITY_RANK["moderate"] for r in results) / len(results)
         any_high = any(r.severity == "high" for r in results)
-        dataset_drift = drift_share >= t.drift_share or any_high
+        dataset_drift = drift_share >= t.drift_share or any_high or (correlation is not None and correlation.drifted)
         if dataset_drift:
             status = "drift"
         elif any(r.severity != "none" for r in results) or missing_columns:
@@ -431,7 +488,7 @@ class DriftDetector:
 
         performance = None
         if model is not None:
-            performance = self.performance_report(model, current)
+            performance = self.performance_report(model, current, config.decay)
 
         return DriftReport(
             columns=results,
@@ -445,11 +502,22 @@ class DriftDetector:
             top_k=top_k,
             missing_columns=missing_columns,
             performance=performance,
+            correlation=correlation,
         )
 
-    def performance_report(self, model: Any, current: pd.DataFrame) -> DecayReport:
-        """Score ``model`` on labelled ``current`` data and compare to the stored baseline."""
+    def performance_report(
+        self,
+        model: Any,
+        current: pd.DataFrame,
+        thresholds: Optional[ThresholdSpec] = None,
+    ) -> DecayReport:
+        """Score ``model`` on labelled ``current`` data and compare to the stored baseline.
+
+        ``thresholds`` optionally overrides the stored decay thresholds (a
+        :class:`DecayThresholds`, a config dict, or a config file path).
+        """
         self._require_fitted()
+        decay = resolve_thresholds(thresholds, ThresholdConfig(self.thresholds, self.decay_thresholds)).decay
         if self.baseline is None or self.target is None:
             raise ValueError("no performance baseline: fit() with target= and model=, or call set_baseline()")
         if self.target not in current.columns:
@@ -457,9 +525,11 @@ class DriftDetector:
         cols = self.feature_names or feature_columns(model, current, self.target)
         labelled = current[current[self.target].notna()]
         metrics = compute_metrics(model, labelled[cols], labelled[self.target])
-        return compare_metrics(self.baseline, metrics, self.decay_thresholds)
+        return compare_metrics(self.baseline, metrics, decay)
 
-    def _check_numeric(self, name: str, profile: NumericProfile, series: pd.Series) -> ColumnDrift:
+    def _check_numeric(
+        self, name: str, profile: NumericProfile, series: pd.Series, thresholds: Optional[DriftThresholds] = None
+    ) -> ColumnDrift:
         values = pd.to_numeric(series, errors="coerce").to_numpy(dtype=float)
         present = values[~np.isnan(values)]
         counts = bin_counts(values, profile.edges)
@@ -487,7 +557,7 @@ class DriftDetector:
         return ColumnDrift(
             column=name,
             kind="numeric",
-            severity=self.thresholds.severity(psi_value, ks_p),
+            severity=(thresholds or self.thresholds).severity(psi_value, ks_p),
             psi=psi_value,
             js_divergence=js_value,
             n_reference=profile.n,
@@ -499,7 +569,9 @@ class DriftDetector:
             details=details,
         )
 
-    def _check_categorical(self, name: str, profile: CategoricalProfile, series: pd.Series) -> ColumnDrift:
+    def _check_categorical(
+        self, name: str, profile: CategoricalProfile, series: pd.Series, thresholds: Optional[DriftThresholds] = None
+    ) -> ColumnDrift:
         values = _as_category_strings(series)
         counts = self._categorical_counts(values, profile)
         psi_value = psi(profile.proportions, counts)
@@ -527,7 +599,7 @@ class DriftDetector:
         return ColumnDrift(
             column=name,
             kind="categorical",
-            severity=self.thresholds.severity(psi_value, chi2_p),
+            severity=(thresholds or self.thresholds).severity(psi_value, chi2_p),
             psi=psi_value,
             js_divergence=js_value,
             n_reference=profile.n,
@@ -556,6 +628,7 @@ class DriftDetector:
                 "categorical_columns": self.categorical_columns,
                 "exclude_columns": self.exclude_columns,
                 "random_state": self.random_state,
+                "correlation_method": self.correlation_method,
                 "thresholds": self.thresholds.to_dict(),
                 "decay_thresholds": self.decay_thresholds.to_dict(),
             },
@@ -564,6 +637,7 @@ class DriftDetector:
             "feature_names": self.feature_names,
             "baseline": self.baseline,
             "columns": {name: asdict(p) for name, p in self.profiles.items()},
+            "correlation": self.correlation.to_dict() if self.correlation else None,
         }
 
     @classmethod
@@ -582,8 +656,12 @@ class DriftDetector:
             thresholds=DriftThresholds.from_dict(cfg.get("thresholds", {})),
             decay_thresholds=DecayThresholds.from_dict(cfg.get("decay_thresholds", {})),
             random_state=cfg.get("random_state", 0),
+            correlation_method=cfg.get("correlation_method", "pearson"),
         )
         det.profiles = {name: _profile_from_dict(p) for name, p in data["columns"].items()}
+        # Detector files written before the correlation check existed have no "correlation" key.
+        corr = data.get("correlation")
+        det.correlation = CorrelationProfile.from_dict(corr) if corr else None
         det.n_reference = int(data["n_reference"])
         det.target = data.get("target")
         det.feature_names = data.get("feature_names")

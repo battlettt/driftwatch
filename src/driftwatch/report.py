@@ -11,6 +11,7 @@ from html import escape
 from typing import TYPE_CHECKING, Any, List, Optional
 
 if TYPE_CHECKING:  # pragma: no cover
+    from .correlation import CorrelationReport
     from .detector import ColumnDrift, DriftReport
 
 STATUS_TEXT = {
@@ -82,6 +83,19 @@ def describe_change(col: "ColumnDrift") -> str:
     return "; ".join(parts) if parts else "-"
 
 
+def correlation_verdict(corr: "CorrelationReport") -> str:
+    """One-sentence summary of a correlation-shift check."""
+    if not corr.pairs:
+        return "No column pair had enough data to compare correlations."
+    if corr.drifted:
+        n = len(corr.flagged_pairs)
+        return (
+            f"{n} column pair{'' if n == 1 else 's'} changed correlation by {corr.threshold} or more "
+            f"(largest change {corr.max_abs_change:.3f})."
+        )
+    return f"No column pair changed correlation by {corr.threshold} or more (largest change {corr.max_abs_change:.3f})."
+
+
 def _md_cell(text: Any) -> str:
     return str(text).replace("|", "\\|").replace("\n", " ")
 
@@ -89,7 +103,7 @@ def _md_cell(text: Any) -> str:
 def _summary_rows(report: "DriftReport") -> List[tuple]:
     counts = report.severity_counts()
     t = report.thresholds
-    return [
+    rows = [
         ("Status", STATUS_TEXT[report.status]),
         ("Overall drift score", f"{report.overall_score:.3f} (0 = identical, 1 = every column at/above PSI {t.psi_high})"),
         (
@@ -97,10 +111,15 @@ def _summary_rows(report: "DriftReport") -> List[tuple]:
             f"{counts['moderate'] + counts['high']} of {len(report.columns)} ({_pct(report.drift_share, 0)})",
         ),
         ("Severity counts", ", ".join(f"{k}: {v}" for k, v in counts.items())),
+    ]
+    if report.correlation is not None:
+        rows.append(("Largest correlation shift", f"{report.correlation.max_abs_change:.3f} (threshold {t.correlation_shift})"))
+    rows += [
         ("Reference rows", f"{report.n_reference:,}"),
         ("Current rows", f"{report.n_current:,}"),
         ("Generated", report.generated_at),
     ]
+    return rows
 
 
 # --------------------------------------------------------------------------- #
@@ -149,6 +168,26 @@ def render_markdown(report: "DriftReport") -> str:
         )
     lines.append("")
 
+    if report.correlation is not None:
+        corr = report.correlation
+        verdict = correlation_verdict(corr)
+        lines += ["## Correlation shifts", "", f"**{verdict}**" if corr.drifted else verdict, ""]
+        if corr.top_shifts:
+            lines += [
+                f"| Column pair | Reference {corr.method} r | Current {corr.method} r | Change | Beyond threshold |",
+                "|---|---:|---:|---:|---|",
+            ]
+            for pair in corr.top_shifts:
+                lines.append(
+                    f"| `{_md_cell(pair.column_a)}` × `{_md_cell(pair.column_b)}` | {pair.reference:+.3f} "
+                    f"| {pair.current:+.3f} | {pair.change:+.3f} | {'yes' if pair.exceeds_threshold else 'no'} |"
+                )
+            lines.append("")
+        if corr.undefined_pairs:
+            names = ", ".join(f"`{_md_cell(a)}` × `{_md_cell(b)}`" for a, b in corr.undefined_pairs[:10])
+            more = f" and {len(corr.undefined_pairs) - 10} more" if len(corr.undefined_pairs) > 10 else ""
+            lines += [f"Not compared (constant column or too few rows with both values): {names}{more}.", ""]
+
     if report.performance is not None:
         perf = report.performance
         verdict = (
@@ -163,12 +202,9 @@ def render_markdown(report: "DriftReport") -> str:
             lines.append(
                 f"| {ch.metric} | {ch.reference:.4f} | {ch.current:.4f} | {ch.change:+.4f}{rel} | {'yes' if ch.decayed else 'no'} |"
             )
-        dt = perf.thresholds
         lines += [
             "",
-            f"Decay rules: accuracy drop ≥ {dt.max_accuracy_drop}, F1 drop ≥ {dt.max_f1_drop}, "
-            f"log-loss increase ≥ {dt.max_log_loss_increase:.0%}. "
-            f"Scored on {int(perf.current.get('n', 0)):,} labelled rows.",
+            f"Decay rules: {', '.join(perf.rules)}. Scored on {int(perf.current.get('n', 0)):,} labelled rows.",
             "",
         ]
 
@@ -179,7 +215,8 @@ def render_markdown(report: "DriftReport") -> str:
         f"`moderate` if PSI ≥ {t.psi_moderate}, `low` if PSI is below {t.psi_moderate} but the KS "
         f"(numeric) or chi-square (categorical) test rejects equality at p < {t.p_value}, otherwise `none`.",
         f"- The dataset is flagged as drifted when at least {t.drift_share:.0%} of columns are `moderate` "
-        "or worse, or any column is `high`.",
+        f"or worse, any column is `high`, or the correlation of any pair of numeric columns changes by "
+        f"{t.correlation_shift} or more.",
         "- **JS div.** is the Jensen-Shannon divergence (base 2, 0 to 1) over the same bins as PSI. "
         "**TV dist.** is the share of probability mass that moved between categories.",
         "",
@@ -270,6 +307,8 @@ def render_html(report: "DriftReport") -> str:
         ("Columns monitored", str(len(report.columns))),
         ("High / moderate", f"{counts['high']} / {counts['moderate']}"),
     ]
+    if report.correlation is not None:
+        tiles.append(("Max correlation shift", f"{report.correlation.max_abs_change:.3f}"))
     if report.performance is not None:
         tiles.append(("Model decay", "yes" if report.performance.decayed else "no"))
     for label, value in tiles:
@@ -313,6 +352,28 @@ def render_html(report: "DriftReport") -> str:
         )
     out.append("</tbody></table>")
 
+    if report.correlation is not None:
+        corr = report.correlation
+        out.append("<h2>Correlation shifts</h2>")
+        out.append(f'<div class="banner {"drift" if corr.drifted else "ok"}">{escape(correlation_verdict(corr))}</div>')
+        if corr.top_shifts:
+            method = escape(corr.method)
+            out.append(
+                f"<table><thead><tr><th>Column pair</th><th>Reference {method} r</th><th>Current {method} r</th>"
+                "<th>Change</th><th>Beyond threshold</th></tr></thead><tbody>"
+            )
+            for pair in corr.top_shifts:
+                out.append(
+                    f"<tr><td><code>{escape(pair.column_a)}</code> × <code>{escape(pair.column_b)}</code></td>"
+                    f'<td class="num">{pair.reference:+.3f}</td><td class="num">{pair.current:+.3f}</td>'
+                    f'<td class="num">{pair.change:+.3f}</td><td>{_flag(pair.exceeds_threshold)}</td></tr>'
+                )
+            out.append("</tbody></table>")
+        if corr.undefined_pairs:
+            names = ", ".join(f"<code>{escape(a)}</code> × <code>{escape(b)}</code>" for a, b in corr.undefined_pairs[:10])
+            more = f" and {len(corr.undefined_pairs) - 10} more" if len(corr.undefined_pairs) > 10 else ""
+            out.append(f'<p class="sub">Not compared (constant column or too few rows with both values): {names}{more}.</p>')
+
     if report.performance is not None:
         perf = report.performance
         out.append("<h2>Model performance</h2>")
@@ -334,10 +395,8 @@ def render_html(report: "DriftReport") -> str:
                 f"<td>{_flag(ch.decayed)}</td></tr>"
             )
         out.append("</tbody></table>")
-        dt = perf.thresholds
         out.append(
-            f'<p class="sub">Decay rules: accuracy drop ≥ {dt.max_accuracy_drop}, F1 drop ≥ {dt.max_f1_drop}, '
-            f"log-loss increase ≥ {dt.max_log_loss_increase:.0%}. "
+            f'<p class="sub">Decay rules: {escape(", ".join(perf.rules))}. '
             f"Scored on {int(perf.current.get('n', 0)):,} labelled rows.</p>"
         )
 
@@ -349,7 +408,8 @@ def render_html(report: "DriftReport") -> str:
         f"but the KS (numeric) or chi-square (categorical) test rejects equality at p &lt; {t.p_value}, "
         "otherwise <code>none</code>. Tick marks on the PSI bars show the two thresholds.</li>",
         f"<li>The dataset is flagged as drifted when at least {t.drift_share:.0%} of columns are "
-        "<code>moderate</code> or worse, or any column is <code>high</code>.</li>",
+        "<code>moderate</code> or worse, any column is <code>high</code>, or the correlation of any pair of "
+        f"numeric columns changes by {t.correlation_shift} or more.</li>",
         "<li><b>JS div.</b> is the Jensen-Shannon divergence (base 2, 0 to 1) over the same bins as PSI. "
         "<b>TV dist.</b> is the share of probability mass that moved between categories.</li>",
         "</ul>",

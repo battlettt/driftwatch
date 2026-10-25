@@ -6,9 +6,10 @@
 | **Overall drift score** | 0.394 (0 = identical, 1 = every column at/above PSI 0.25) |
 | **Drifted columns (moderate or high)** | 4 of 10 (40%) |
 | **Severity counts** | none: 4, low: 2, moderate: 1, high: 3 |
+| **Largest correlation shift** | 0.027 (threshold 0.2) |
 | **Reference rows** | 4,000 |
 | **Current rows** | 3,000 |
-| **Generated** | 2026-10-25 14:58:00 UTC |
+| **Generated** | 2026-10-25 15:11:26 UTC |
 
 ## Top drifted columns
 
@@ -35,6 +36,18 @@
 | `employment_years` | numeric | none | 0.003 | 0.001 | 0.015 | 0.8401 | - | - | 0.0% → 0.0% |
 | `region` | categorical | none | 0.002 | 0.000 | - | - | 0.3068 | 0.018 | 0.0% → 0.0% |
 
+## Correlation shifts
+
+No column pair changed correlation by 0.2 or more (largest change 0.027).
+
+| Column pair | Reference pearson r | Current pearson r | Change | Beyond threshold |
+|---|---:|---:|---:|---|
+| `age` × `term_months` | -0.032 | -0.005 | +0.027 | no |
+| `loan_amount` × `term_months` | -0.001 | -0.025 | -0.024 | no |
+| `age` × `open_accounts` | -0.010 | -0.033 | -0.023 | no |
+| `age` × `employment_years` | +0.009 | +0.031 | +0.021 | no |
+| `term_months` × `employment_years` | -0.010 | +0.010 | +0.021 | no |
+
 ## Model performance
 
 **Model performance has decayed** (accuracy, log_loss).
@@ -50,5 +63,5 @@ Decay rules: accuracy drop ≥ 0.05, F1 drop ≥ 0.05, log-loss increase ≥ 20%
 ## How to read this report
 
 - **Severity** comes from the Population Stability Index: `high` if PSI ≥ 0.25, `moderate` if PSI ≥ 0.1, `low` if PSI is below 0.1 but the KS (numeric) or chi-square (categorical) test rejects equality at p < 0.01, otherwise `none`.
-- The dataset is flagged as drifted when at least 30% of columns are `moderate` or worse, or any column is `high`.
+- The dataset is flagged as drifted when at least 30% of columns are `moderate` or worse, any column is `high`, or the correlation of any pair of numeric columns changes by 0.2 or more.
 - **JS div.** is the Jensen-Shannon divergence (base 2, 0 to 1) over the same bins as PSI. **TV dist.** is the share of probability mass that moved between categories.

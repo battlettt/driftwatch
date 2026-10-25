@@ -14,6 +14,12 @@ Defaults and their rationale (see README "Interpreting drift scores"):
   false-alarm rate down when many columns are tested at once.
 * ``drift_share = 0.30``: the dataset is flagged as drifted when at least 30%
   of monitored columns are ``moderate`` or worse, or any column is ``high``.
+* ``correlation_shift = 0.20``: the dataset is also flagged as drifted when the
+  correlation between any pair of numeric columns moves by 0.20 or more in
+  absolute terms (e.g. 0.65 -> 0.40). With 1,000 rows per batch the sampling
+  noise of a correlation coefficient is roughly 0.03, so a 0.20 move is far
+  outside noise while still small enough to catch a broken relationship
+  between features that every per-column check would miss.
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ class DriftThresholds:
     psi_high: float = 0.25
     p_value: float = 0.01
     drift_share: float = 0.30
+    correlation_shift: float = 0.20
 
     def __post_init__(self) -> None:
         if not 0 < self.psi_moderate < self.psi_high:
@@ -39,6 +46,8 @@ class DriftThresholds:
             raise ValueError("p_value must be in (0, 1)")
         if not 0 < self.drift_share <= 1:
             raise ValueError("drift_share must be in (0, 1]")
+        if not 0 < self.correlation_shift <= 2:
+            raise ValueError("correlation_shift must be in (0, 2]")
 
     def severity(self, psi_value: float, p_value: Optional[float]) -> str:
         """Map a column's PSI and test p-value to ``none``/``low``/``moderate``/``high``."""
