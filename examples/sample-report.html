@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>driftwatch report</title>
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --border:#d1d9e0; --bg:#ffffff; --panel:#f6f8fa;
+        --none:#1a7f37; --low:#0969da; --moderate:#9a6700; --high:#cf222e; }
+* { box-sizing: border-box; }
+body { margin:0; padding:32px; background:var(--bg); color:var(--fg);
+       font: 14px/1.5 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+main { max-width: 1180px; margin: 0 auto; }
+h1 { font-size: 24px; margin: 0 0 4px; }
+h2 { font-size: 18px; margin: 32px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.sub { color: var(--muted); margin: 0 0 20px; }
+.banner { padding: 14px 18px; border-radius: 8px; font-weight: 600; font-size: 16px; margin-bottom: 20px;
+          border: 1px solid; }
+.banner.ok { color: var(--none); border-color: var(--none); background: #dafbe1; }
+.banner.warning { color: var(--moderate); border-color: var(--moderate); background: #fff8c5; }
+.banner.drift { color: var(--high); border-color: var(--high); background: #ffebe9; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.tile { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+.tile .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.tile .value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+th { background: var(--panel); font-weight: 600; white-space: nowrap; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600;
+         color: #fff; }
+.badge.none { background: var(--none); } .badge.low { background: var(--low); }
+.badge.moderate { background: var(--moderate); } .badge.high { background: var(--high); }
+.bar { position: relative; height: 8px; width: 120px; background: #eaeef2; border-radius: 4px; margin-top: 4px; }
+.bar span { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; }
+.bar i { position: absolute; top: -2px; bottom: -2px; width: 1px; background: var(--muted); }
+.notice { background: #fff8c5; border: 1px solid var(--moderate); border-radius: 6px; padding: 10px 14px; }
+ul.notes { color: var(--muted); padding-left: 20px; }
+footer { color: var(--muted); font-size: 12px; margin-top: 32px; }
+</style></head><body><main>
+<h1>driftwatch report</h1>
+<p class="sub">Generated 2026-10-25 14:58:00 UTC · 4,000 reference rows vs 3,000 current rows</p>
+<div class="banner drift">DRIFT DETECTED</div>
+<div class="tiles">
+<div class="tile"><div class="label">Overall drift score</div><div class="value">0.394</div></div>
+<div class="tile"><div class="label">Drifted columns</div><div class="value">40%</div></div>
+<div class="tile"><div class="label">Columns monitored</div><div class="value">10</div></div>
+<div class="tile"><div class="label">High / moderate</div><div class="value">3 / 1</div></div>
+<div class="tile"><div class="label">Model decay</div><div class="value">yes</div></div>
+</div>
+<h2>Top drifted columns</h2>
+<table><thead><tr><th>Column</th><th>Type</th><th>Severity</th><th>PSI</th><th>What changed</th></tr></thead><tbody>
+<tr><td><code>purpose</code></td><td>categorical</td><td><span class="badge high">high</span></td><td class="num">1.130<div class="bar" title="PSI 1.130"><span style="width:100.0%;background:var(--high)"></span><i style="left:20.0%"></i><i style="left:50.0%"></i></div></td><td>&#x27;__other__&#x27; 0.0% → 15.1%; 1 unseen category (&#x27;small_business&#x27;)</td></tr>
+<tr><td><code>annual_income</code></td><td>numeric</td><td><span class="badge high">high</span></td><td class="num">0.360<div class="bar" title="PSI 0.360"><span style="width:71.9%;background:var(--high)"></span><i style="left:20.0%"></i><i style="left:50.0%"></i></div></td><td>mean 61,034 → 48,176 (-0.45 σ); 0.2% outside reference range; missing 1.7% → 8.4%</td></tr>
+<tr><td><code>credit_score</code></td><td>numeric</td><td><span class="badge high">high</span></td><td class="num">0.269<div class="bar" title="PSI 0.269"><span style="width:53.8%;background:var(--high)"></span><i style="left:20.0%"></i><i style="left:50.0%"></i></div></td><td>mean 691.1 → 660.0 (-0.56 σ); 0.2% outside reference range</td></tr>
+<tr><td><code>home_ownership</code></td><td>categorical</td><td><span class="badge moderate">moderate</span></td><td class="num">0.108<div class="bar" title="PSI 0.108"><span style="width:21.6%;background:var(--moderate)"></span><i style="left:20.0%"></i><i style="left:50.0%"></i></div></td><td>&#x27;RENT&#x27; 39.2% → 55.5%</td></tr>
+<tr><td><code>term_months</code></td><td>numeric</td><td><span class="badge low">low</span></td><td class="num">0.094<div class="bar" title="PSI 0.094"><span style="width:18.8%;background:var(--low)"></span><i style="left:20.0%"></i><i style="left:50.0%"></i></div></td><td>mean 43.2 → 46.8 (+0.32 σ)</td></tr>
+</tbody></table>
+<h2>All columns</h2>
+<table><thead><tr><th>Column</th><th>Type</th><th>Severity</th><th>PSI</th><th>JS div.</th><th>KS stat</th><th>KS p</th><th>χ² p</th><th>TV dist.</th><th>Missing (ref → cur)</th></tr></thead><tbody>
+<tr><td><code>purpose</code></td><td>categorical</td><td><span class="badge high">high</span></td><td class="num">1.130<div class="bar" title="PSI 1.130"><span style="width:100.0%;background:var(--high)"></span><i style="left:20.0%"></i><i style="left:50.0%"></i></div></td><td class="num">0.081</td><td class="num">-</td><td class="num">-</td><td class="num"><0.0001</td><td class="num">0.151</td><td class="num">0.0% → 0.0%</td></tr>
+<tr><td><code>annual_income</code></td><td>numeric</td><td><span class="badge high">high</span></td><td class="num">0.360<div class="bar" title="PSI 0.360"><span style="width:71.9%;background:var(--high)"></span><i style="left:20.0%"></i><i style="left:50.0%"></i></div></td><td class="num">0.062</td><td class="num">0.207</td><td class="num"><0.0001</td><td class="num">-</td><td class="num">-</td><td class="num">1.7% → 8.4%</td></tr>
+<tr><td><code>credit_score</code></td><td>numeric</td><td><span class="badge high">high</span></td><td class="num">0.269<div class="bar" title="PSI 0.269"><span style="width:53.8%;background:var(--high)"></span><i style="left:20.0%"></i><i style="left:50.0%"></i></div></td><td class="num">0.047</td><td class="num">0.218</td><td class="num"><0.0001</td><td class="num">-</td><td class="num">-</td><td class="num">0.0% → 0.0%</td></tr>
+<tr><td><code>home_ownership</code></td><td>categorical</td><td><span class="badge moderate">moderate</span></td><td class="num">0.108<div class="bar" title="PSI 0.108"><span style="width:21.6%;background:var(--moderate)"></span><i style="left:20.0%"></i><i style="left:50.0%"></i></div></td><td class="num">0.019</td><td class="num">-</td><td class="num">-</td><td class="num"><0.0001</td><td class="num">0.162</td><td class="num">0.0% → 0.0%</td></tr>
+<tr><td><code>term_months</code></td><td>numeric</td><td><span class="badge low">low</span></td><td class="num">0.094<div class="bar" title="PSI 0.094"><span style="width:18.8%;background:var(--low)"></span><i style="left:20.0%"></i><i style="left:50.0%"></i></div></td><td class="num">0.017</td><td class="num">0.148</td><td class="num"><0.0001</td><td class="num">-</td><td class="num">-</td><td class="num">0.0% → 0.0%</td></tr>
+<tr><td><code>loan_amount</code></td><td>numeric</td><td><span class="badge low">low</span></td><td class="num">0.015<div class="bar" title="PSI 0.015"><span style="width:3.0%;background:var(--low)"></span><i style="left:20.0%"></i><i style="left:50.0%"></i></div></td><td class="num">0.003</td><td class="num">0.052</td><td class="num">0.0002</td><td class="num">-</td><td class="num">-</td><td class="num">0.0% → 0.0%</td></tr>
+<tr><td><code>age</code></td><td>numeric</td><td><span class="badge none">none</span></td><td class="num">0.008<div class="bar" title="PSI 0.008"><span style="width:1.6%;background:var(--none)"></span><i style="left:20.0%"></i><i style="left:50.0%"></i></div></td><td class="num">0.001</td><td class="num">0.022</td><td class="num">0.3595</td><td class="num">-</td><td class="num">-</td><td class="num">0.0% → 0.0%</td></tr>
+<tr><td><code>open_accounts</code></td><td>numeric</td><td><span class="badge none">none</span></td><td class="num">0.006<div class="bar" title="PSI 0.006"><span style="width:1.2%;background:var(--none)"></span><i style="left:20.0%"></i><i style="left:50.0%"></i></div></td><td class="num">0.001</td><td class="num">0.035</td><td class="num">0.0331</td><td class="num">-</td><td class="num">-</td><td class="num">0.0% → 0.0%</td></tr>
+<tr><td><code>employment_years</code></td><td>numeric</td><td><span class="badge none">none</span></td><td class="num">0.003<div class="bar" title="PSI 0.003"><span style="width:0.6%;background:var(--none)"></span><i style="left:20.0%"></i><i style="left:50.0%"></i></div></td><td class="num">0.001</td><td class="num">0.015</td><td class="num">0.8401</td><td class="num">-</td><td class="num">-</td><td class="num">0.0% → 0.0%</td></tr>
+<tr><td><code>region</code></td><td>categorical</td><td><span class="badge none">none</span></td><td class="num">0.002<div class="bar" title="PSI 0.002"><span style="width:0.4%;background:var(--none)"></span><i style="left:20.0%"></i><i style="left:50.0%"></i></div></td><td class="num">0.000</td><td class="num">-</td><td class="num">-</td><td class="num">0.3068</td><td class="num">0.018</td><td class="num">0.0% → 0.0%</td></tr>
+</tbody></table>
+<h2>Model performance</h2>
+<div class="banner drift">Model performance has decayed (accuracy, log_loss)</div>
+<table><thead><tr><th>Metric</th><th>Reference</th><th>Current</th><th>Change</th><th>Decayed</th></tr></thead><tbody>
+<tr><td>accuracy</td><td class="num">0.7923</td><td class="num">0.6457</td><td class="num">-0.1466 (-18.5%)</td><td><span class="badge high">yes</span></td></tr>
+<tr><td>f1</td><td class="num">0.3069</td><td class="num">0.6032</td><td class="num">+0.2963 (+96.5%)</td><td><span class="badge none">no</span></td></tr>
+<tr><td>log_loss</td><td class="num">0.4519</td><td class="num">0.6436</td><td class="num">+0.1917 (+42.4%)</td><td><span class="badge high">yes</span></td></tr>
+</tbody></table>
+<p class="sub">Decay rules: accuracy drop ≥ 0.05, F1 drop ≥ 0.05, log-loss increase ≥ 20%. Scored on 3,000 labelled rows.</p>
+<h2>How to read this report</h2>
+<ul class="notes">
+<li><b>Severity</b> comes from the Population Stability Index: <code>high</code> if PSI ≥ 0.25, <code>moderate</code> if PSI ≥ 0.1, <code>low</code> if PSI is below 0.1 but the KS (numeric) or chi-square (categorical) test rejects equality at p &lt; 0.01, otherwise <code>none</code>. Tick marks on the PSI bars show the two thresholds.</li>
+<li>The dataset is flagged as drifted when at least 30% of columns are <code>moderate</code> or worse, or any column is <code>high</code>.</li>
+<li><b>JS div.</b> is the Jensen-Shannon divergence (base 2, 0 to 1) over the same bins as PSI. <b>TV dist.</b> is the share of probability mass that moved between categories.</li>
+</ul>
+<footer>Generated by driftwatch. This file is self-contained and makes no network requests.</footer>
+</main></body></html>
